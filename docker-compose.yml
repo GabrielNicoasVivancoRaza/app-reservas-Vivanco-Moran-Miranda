@@ -13,7 +13,6 @@ services:
       - sonarqube_logs:/opt/sonarqube/logs
       - sonarqube_extensions:/opt/sonarqube/extensions
 
-
   mongo:
     image: mongo
     restart: always
