@@ -65,30 +65,6 @@ jobs:
             $stage = "SonarQube API (qualitygates/project_status)"
             $gate = Invoke-RestMethod -Uri "$hostUrl/api/qualitygates/project_status?projectKey=$projectKey" -Headers $sonarHeaders
 
-            $stage = "SonarQube API (measures/component)"
-            $metricKeys = "bugs,vulnerabilities,code_smells,ncloc,duplicated_lines_density,coverage,complexity,cognitive_complexity,sqale_debt_ratio,security_hotspots_reviewed,reliability_rating,security_rating,sqale_rating,blocker_violations,critical_violations,major_violations"
-            $measures = Invoke-RestMethod -Uri "$hostUrl/api/measures/component?component=$projectKey&metricKeys=$metricKeys" -Headers $sonarHeaders
-
-            $m = @{}
-            foreach ($meas in $measures.component.measures) { $m[$meas.metric] = $meas.value }
-
-            function Get-Value($key) {
-              if ($m.ContainsKey($key)) { return $m[$key] }
-              return "N/A"
-            }
-
-            function Get-Rating($key) {
-              if (-not $m.ContainsKey($key)) { return "N/A" }
-              switch ($m[$key]) {
-                "1.0" { return "A" }
-                "2.0" { return "B" }
-                "3.0" { return "C" }
-                "4.0" { return "D" }
-                "5.0" { return "E" }
-                default { return "N/A" }
-              }
-            }
-
             $metricNames = @{
               blocker_violations         = "Blocker Issues (> 0)"
               critical_violations        = "Critical Issues (> 0)"
@@ -118,18 +94,6 @@ jobs:
 
           Commit: $($env:COMMIT_MESSAGE)
           Autor: $($env:COMMIT_AUTHOR)
-
-          Metricas generales:
-            Bugs: $(Get-Value 'bugs')
-            Vulnerabilidades: $(Get-Value 'vulnerabilities')
-            Code Smells: $(Get-Value 'code_smells')
-            Lineas de codigo: $(Get-Value 'ncloc')
-            Duplicacion: $(Get-Value 'duplicated_lines_density')%
-
-          Ratings de calidad:
-            Seguridad: $(Get-Rating 'security_rating')
-            Fiabilidad: $(Get-Rating 'reliability_rating')
-            Mantenibilidad: $(Get-Rating 'sqale_rating')
 
           Quality Gate StrictGate: $gateLabel
           $condText
