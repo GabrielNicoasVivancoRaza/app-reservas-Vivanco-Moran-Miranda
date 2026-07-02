@@ -10,6 +10,11 @@ jobs:
     name: Notify Telegram with SonarQube results
     runs-on: self-hosted
     steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
       - name: Build and send report
         shell: powershell
         env:
@@ -35,10 +40,10 @@ jobs:
 
           function Send-Telegram($text) {
             $telegramUri = "https://api.telegram.org/bot$($env:TELEGRAM_BOT_TOKEN)/sendMessage"
-            Invoke-RestMethod -Uri $telegramUri -Method Post -Body @{
-              chat_id = $env:TELEGRAM_CHAT_ID
-              text    = $text
-            } | Out-Null
+            $bodyObj = @{ chat_id = $env:TELEGRAM_CHAT_ID; text = $text }
+            $json = $bodyObj | ConvertTo-Json -Compress
+            $bytes = [System.Text.Encoding]::UTF8.GetBytes($json)
+            Invoke-RestMethod -Uri $telegramUri -Method Post -Body $bytes -ContentType "application/json; charset=utf-8" | Out-Null
           }
 
           $stage = "inicio"
@@ -65,12 +70,71 @@ jobs:
             $stage = "SonarQube API (qualitygates/project_status)"
             $gate = Invoke-RestMethod -Uri "$hostUrl/api/qualitygates/project_status?projectKey=$projectKey" -Headers $sonarHeaders
 
+            $m = @{}
+            try {
+              $metricKeys = "bugs,vulnerabilities,code_smells,ncloc,duplicated_lines_density,reliability_rating,security_rating,sqale_rating"
+              $measures = Invoke-RestMethod -Uri "$hostUrl/api/measures/component?component=$projectKey&metricKeys=$metricKeys" -Headers $sonarHeaders
+              foreach ($meas in $measures.component.measures) { $m[$meas.metric] = $meas.value }
+            } catch {
+              Write-Host "No se pudieron obtener las metricas generales: $($_.Exception.Message)"
+            }
+
+            function Get-Value($key) {
+              if ($m.ContainsKey($key)) { return $m[$key] }
+              return "N/A"
+            }
+
+            function Get-Rating($key) {
+              if (-not $m.ContainsKey($key)) { return "N/A" }
+              switch ($m[$key]) {
+                "1.0" { return "A" }
+                "2.0" { return "B" }
+                "3.0" { return "C" }
+                "4.0" { return "D" }
+                "5.0" { return "E" }
+                default { return "N/A" }
+              }
+            }
+
+            $depCritical = 0
+            $depHigh = 0
+            $depMedium = 0
+            $depLow = 0
+            $depTotal = 0
+            try {
+              $auditDirs = @("auth-service", "booking-service", "user-service", "notification-service", "frontend")
+              foreach ($dir in $auditDirs) {
+                if (Test-Path (Join-Path $dir "package-lock.json")) {
+                  Push-Location $dir
+                  try {
+                    $auditRaw = npm audit --json 2>$null | Out-String
+                    $audit = $auditRaw | ConvertFrom-Json
+                    $v = $audit.metadata.vulnerabilities
+                    if ($v) {
+                      $depCritical += [int]$v.critical
+                      $depHigh     += [int]$v.high
+                      $depMedium   += [int]$v.moderate
+                      $depLow      += [int]$v.low
+                      $depTotal    += [int]$v.total
+                    }
+                  } catch {
+                    Write-Host "npm audit fallo en $dir : $($_.Exception.Message)"
+                  } finally {
+                    Pop-Location
+                  }
+                }
+              }
+            } catch {
+              Write-Host "No se pudo completar npm audit: $($_.Exception.Message)"
+            }
+
             $metricNames = @{
               blocker_violations         = "Blocker Issues (> 0)"
               critical_violations        = "Critical Issues (> 0)"
               major_violations           = "Major Issues (> 5)"
               security_hotspots_reviewed = "Security Hotspots Reviewed (< 100%)"
               coverage                   = "Coverage (< 80%)"
+              line_coverage               = "Coverage (< 80%)"
               duplicated_lines_density   = "Duplicated Lines % (> 3%)"
               sqale_debt_ratio           = "Technical Debt Ratio (> 2.5%)"
               complexity                 = "Cyclomatic Complexity (> 50)"
@@ -80,29 +144,48 @@ jobs:
             $condLines = foreach ($c in $gate.projectStatus.conditions) {
               $label = $metricNames[$c.metricKey]
               if (-not $label) { $label = $c.metricKey }
-              $mark = if ($c.status -eq "OK") { "[OK]" } else { "[FALLA]" }
+              $mark = if ($c.status -eq "OK") { "✅" } else { "❌" }
               "  $mark $label -> actual: $($c.actualValue)"
             }
             $condText = ($condLines -join "`n")
             if (-not $condText) { $condText = "  (StrictGate no devolvio condiciones; verifica que sea el Quality Gate por defecto del proyecto)" }
 
             $gateStatus = $gate.projectStatus.status
-            $gateLabel = if ($gateStatus -eq "OK") { "PASSED" } else { "FAILED" }
+            $gateLabel = if ($gateStatus -eq "OK") { "✅ PASSED" } else { "❌ FAILED" }
 
             $message = @"
-          Alertas SAST - ReservasEC ($($env:HEAD_BRANCH))
+          🔔 Alertas SAST - ReservasEC ($($env:HEAD_BRANCH))
 
-          Commit: $($env:COMMIT_MESSAGE)
-          Autor: $($env:COMMIT_AUTHOR)
+          📝 Commit: $($env:COMMIT_MESSAGE)
+          👤 Autor: $($env:COMMIT_AUTHOR)
 
-          Quality Gate StrictGate: $gateLabel
+          📊 Metricas Generales:
+            🐞 Bugs: $(Get-Value 'bugs')
+            🔓 Vulnerabilidades: $(Get-Value 'vulnerabilities')
+            👃 Code Smells: $(Get-Value 'code_smells')
+            📄 Lineas de codigo: $(Get-Value 'ncloc')
+            🔁 Duplicacion: $(Get-Value 'duplicated_lines_density')%
+
+          🏅 Ratings de Calidad:
+            🔐 Seguridad: $(Get-Rating 'security_rating')
+            🛡️ Fiabilidad: $(Get-Rating 'reliability_rating')
+            🔧 Mantenibilidad: $(Get-Rating 'sqale_rating')
+
+          📦 Vulnerabilidades en dependencias (npm audit):
+            🔴 CRITICAL: $depCritical
+            🟠 HIGH: $depHigh
+            🟡 MEDIUM: $depMedium
+            🔵 LOW: $depLow
+            ⚪ TOTAL: $depTotal
+
+          🚦 Quality Gate StrictGate: $gateLabel
           $condText
 
-          Archivos modificados:
+          📁 Archivos modificados:
           $filesText
 
-          Ver en SonarQube: $dashboardUrl
-          Ver commit en GitHub: $commitUrl
+          🔗 Ver en SonarQube: $dashboardUrl
+          🔗 Ver commit en GitHub: $commitUrl
           "@
 
             $stage = "envio a Telegram"
