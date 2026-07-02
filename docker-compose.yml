@@ -1,4 +1,18 @@
 services:
+  sonarqube:
+    image: sonarqube:9.9-community
+    container_name: sonarqube1
+    restart: unless-stopped
+    ports:
+      - "9000:9000"
+    environment:
+      - SONAR_EDITION=community
+      - SONARQUBE_WEB_JVM_OPTS=-Xmx512m -Xms128m
+    volumes:
+      - sonarqube_data:/opt/sonarqube/data
+      - sonarqube_logs:/opt/sonarqube/logs
+      - sonarqube_extensions:/opt/sonarqube/extensions
+
   mongo:
     image: mongo
     restart: always
@@ -77,3 +91,6 @@ services:
 
 volumes:
   mongo_data:
+  sonarqube_data:
+  sonarqube_logs:
+  sonarqube_extensions:

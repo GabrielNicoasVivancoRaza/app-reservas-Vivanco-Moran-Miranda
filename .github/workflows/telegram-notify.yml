@@ -1,0 +1,49 @@
+name: Telegram Notify
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+
+jobs:
+  notify:
+    name: Notify Telegram
+    runs-on: ubuntu-latest
+    if: github.event.head_commit != null
+    steps:
+      - name: Send Telegram notification
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          COMMIT_AUTHOR: ${{ github.event.head_commit.author.name }}
+          COMMIT_BRANCH: ${{ github.ref_name }}
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+          COMMIT_URL: ${{ github.event.head_commit.url }}
+          COMMIT_ADDED: ${{ join(github.event.head_commit.added, ', ') }}
+          COMMIT_MODIFIED: ${{ join(github.event.head_commit.modified, ', ') }}
+          COMMIT_REMOVED: ${{ join(github.event.head_commit.removed, ', ') }}
+        run: |
+          FILES_TEXT=""
+          if [ -n "$COMMIT_ADDED" ]; then
+            FILES_TEXT="${FILES_TEXT}+ Agregados: ${COMMIT_ADDED}
+          "
+          fi
+          if [ -n "$COMMIT_MODIFIED" ]; then
+            FILES_TEXT="${FILES_TEXT}~ Modificados: ${COMMIT_MODIFIED}
+          "
+          fi
+          if [ -n "$COMMIT_REMOVED" ]; then
+            FILES_TEXT="${FILES_TEXT}- Eliminados: ${COMMIT_REMOVED}
+          "
+          fi
+          if [ -z "$FILES_TEXT" ]; then
+            FILES_TEXT="(sin archivos reportados)"
+          fi
+
+          MESSAGE=$(printf 'Nuevo commit en ReservasEC\n\nAutor: %s\nRama: %s\nMensaje: %s\n\nArchivos:\n%s\nCommit: %s' \
+            "$COMMIT_AUTHOR" "$COMMIT_BRANCH" "$COMMIT_MESSAGE" "$FILES_TEXT" "$COMMIT_URL")
+
+          curl -sS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+            --data-urlencode "text=${MESSAGE}"
