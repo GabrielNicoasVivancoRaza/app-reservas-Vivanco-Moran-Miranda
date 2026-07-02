@@ -20,11 +20,25 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Ensure SonarScanner CLI
+        shell: powershell
+        run: |
+          $version = "7.3.0.5189"
+          $installDir = "$env:LOCALAPPDATA\sonar-scanner-cli\$version"
+          $scannerBat = "$installDir\sonar-scanner-$version-windows-x64\bin\sonar-scanner.bat"
+          if (-not (Test-Path $scannerBat)) {
+            New-Item -ItemType Directory -Force -Path $installDir | Out-Null
+            $zipPath = "$installDir\sonar-scanner-cli.zip"
+            Invoke-WebRequest -Uri "https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-$version-windows-x64.zip" -OutFile $zipPath
+            Expand-Archive -Path $zipPath -DestinationPath $installDir -Force
+          }
+          $binDir = Split-Path $scannerBat -Parent
+          Add-Content -Path $env:GITHUB_PATH -Value $binDir
+
       - name: SonarQube Scan
-        uses: SonarSource/sonarqube-scan-action@v5
+        shell: powershell
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
-        with:
-          args: >
-            -Dsonar.qualitygate.wait=true
+        run: |
+          sonar-scanner.bat "-Dsonar.host.url=$env:SONAR_HOST_URL" "-Dsonar.token=$env:SONAR_TOKEN" "-Dsonar.qualitygate.wait=true"
