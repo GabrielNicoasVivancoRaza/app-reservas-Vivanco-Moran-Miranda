@@ -31,6 +31,33 @@ jobs:
           RUN_URL: ${{ github.event.workflow_run.html_url }}
         run: |
           $ErrorActionPreference = "Stop"
+
+          function Emoji([int]$cp) { [char]::ConvertFromUtf32($cp) }
+          $eBell    = Emoji 0x1F514
+          $eMemo    = Emoji 0x1F4DD
+          $ePerson  = Emoji 0x1F464
+          $eChart   = Emoji 0x1F4CA
+          $eBug     = Emoji 0x1F41E
+          $eUnlock  = Emoji 0x1F513
+          $eNose    = Emoji 0x1F443
+          $ePage    = Emoji 0x1F4C4
+          $eRepeat  = Emoji 0x1F501
+          $eMedal   = Emoji 0x1F3C5
+          $eLock    = Emoji 0x1F510
+          $eShield  = Emoji 0x1F6E1
+          $eWrench  = Emoji 0x1F527
+          $ePackage = Emoji 0x1F4E6
+          $eRed     = Emoji 0x1F534
+          $eOrange  = Emoji 0x1F7E0
+          $eYellow  = Emoji 0x1F7E1
+          $eBlue    = Emoji 0x1F535
+          $eWhite   = Emoji 0x26AA
+          $eTraffic = Emoji 0x1F6A6
+          $eCheck   = Emoji 0x2705
+          $eCross   = Emoji 0x274C
+          $eFolder  = Emoji 0x1F4C1
+          $eLink    = Emoji 0x1F517
+
           $repo = $env:GITHUB_REPOSITORY
           $sha = $env:HEAD_SHA
           $hostUrl = $env:SONAR_HOST_URL.TrimEnd('/')
@@ -144,48 +171,48 @@ jobs:
             $condLines = foreach ($c in $gate.projectStatus.conditions) {
               $label = $metricNames[$c.metricKey]
               if (-not $label) { $label = $c.metricKey }
-              $mark = if ($c.status -eq "OK") { "✅" } else { "❌" }
+              $mark = if ($c.status -eq "OK") { $eCheck } else { $eCross }
               "  $mark $label -> actual: $($c.actualValue)"
             }
             $condText = ($condLines -join "`n")
             if (-not $condText) { $condText = "  (StrictGate no devolvio condiciones; verifica que sea el Quality Gate por defecto del proyecto)" }
 
             $gateStatus = $gate.projectStatus.status
-            $gateLabel = if ($gateStatus -eq "OK") { "✅ PASSED" } else { "❌ FAILED" }
+            $gateLabel = if ($gateStatus -eq "OK") { "$eCheck PASSED" } else { "$eCross FAILED" }
 
             $message = @"
-          🔔 Alertas SAST - ReservasEC ($($env:HEAD_BRANCH))
+          $eBell Alertas SAST - ReservasEC ($($env:HEAD_BRANCH))
 
-          📝 Commit: $($env:COMMIT_MESSAGE)
-          👤 Autor: $($env:COMMIT_AUTHOR)
+          $eMemo Commit: $($env:COMMIT_MESSAGE)
+          $ePerson Autor: $($env:COMMIT_AUTHOR)
 
-          📊 Metricas Generales:
-            🐞 Bugs: $(Get-Value 'bugs')
-            🔓 Vulnerabilidades: $(Get-Value 'vulnerabilities')
-            👃 Code Smells: $(Get-Value 'code_smells')
-            📄 Lineas de codigo: $(Get-Value 'ncloc')
-            🔁 Duplicacion: $(Get-Value 'duplicated_lines_density')%
+          $eChart Metricas Generales:
+            $eBug Bugs: $(Get-Value 'bugs')
+            $eUnlock Vulnerabilidades: $(Get-Value 'vulnerabilities')
+            $eNose Code Smells: $(Get-Value 'code_smells')
+            $ePage Lineas de codigo: $(Get-Value 'ncloc')
+            $eRepeat Duplicacion: $(Get-Value 'duplicated_lines_density')%
 
-          🏅 Ratings de Calidad:
-            🔐 Seguridad: $(Get-Rating 'security_rating')
-            🛡️ Fiabilidad: $(Get-Rating 'reliability_rating')
-            🔧 Mantenibilidad: $(Get-Rating 'sqale_rating')
+          $eMedal Ratings de Calidad:
+            $eLock Seguridad: $(Get-Rating 'security_rating')
+            $eShield Fiabilidad: $(Get-Rating 'reliability_rating')
+            $eWrench Mantenibilidad: $(Get-Rating 'sqale_rating')
 
-          📦 Vulnerabilidades en dependencias (npm audit):
-            🔴 CRITICAL: $depCritical
-            🟠 HIGH: $depHigh
-            🟡 MEDIUM: $depMedium
-            🔵 LOW: $depLow
-            ⚪ TOTAL: $depTotal
+          $ePackage Vulnerabilidades en dependencias (npm audit):
+            $eRed CRITICAL: $depCritical
+            $eOrange HIGH: $depHigh
+            $eYellow MEDIUM: $depMedium
+            $eBlue LOW: $depLow
+            $eWhite TOTAL: $depTotal
 
-          🚦 Quality Gate StrictGate: $gateLabel
+          $eTraffic Quality Gate StrictGate: $gateLabel
           $condText
 
-          📁 Archivos modificados:
+          $eFolder Archivos modificados:
           $filesText
 
-          🔗 Ver en SonarQube: $dashboardUrl
-          🔗 Ver commit en GitHub: $commitUrl
+          $eLink Ver en SonarQube: $dashboardUrl
+          $eLink Ver commit en GitHub: $commitUrl
           "@
 
             $stage = "envio a Telegram"
