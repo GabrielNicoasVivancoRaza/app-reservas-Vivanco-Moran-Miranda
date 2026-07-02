@@ -41,7 +41,10 @@ jobs:
             } | Out-Null
           }
 
+          $stage = "inicio"
+
           try {
+            $stage = "GitHub API (commits)"
             $ghHeaders = @{
               Authorization = "Bearer $($env:GH_TOKEN)"
               Accept        = "application/vnd.github+json"
@@ -59,8 +62,10 @@ jobs:
             $b64 = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes($pair))
             $sonarHeaders = @{ Authorization = "Basic $b64" }
 
+            $stage = "SonarQube API (qualitygates/project_status)"
             $gate = Invoke-RestMethod -Uri "$hostUrl/api/qualitygates/project_status?projectKey=$projectKey" -Headers $sonarHeaders
 
+            $stage = "SonarQube API (measures/component)"
             $metricKeys = "bugs,vulnerabilities,code_smells,ncloc,duplicated_lines_density,coverage,complexity,cognitive_complexity,sqale_debt_ratio,security_hotspots_reviewed,reliability_rating,security_rating,sqale_rating,blocker_violations,critical_violations,major_violations"
             $measures = Invoke-RestMethod -Uri "$hostUrl/api/measures/component?component=$projectKey&metricKeys=$metricKeys" -Headers $sonarHeaders
 
@@ -136,6 +141,7 @@ jobs:
           Ver commit en GitHub: $commitUrl
           "@
 
+            $stage = "envio a Telegram"
             Send-Telegram $message
 
             if ($gateStatus -ne "OK") {
@@ -144,6 +150,10 @@ jobs:
             }
           }
           catch {
-            Send-Telegram "No se pudo generar el reporte de SonarQube para el commit $sha en rama $($env:HEAD_BRANCH).`nError: $($_.Exception.Message)`nRevisa el run: $($env:RUN_URL)"
+            $statusCode = $null
+            if ($_.Exception.Response) { $statusCode = [int]$_.Exception.Response.StatusCode }
+            $detail = "Paso: $stage`nError: $($_.Exception.Message)"
+            if ($statusCode) { $detail += "`nHTTP status: $statusCode" }
+            Send-Telegram "No se pudo generar el reporte de SonarQube para el commit $sha en rama $($env:HEAD_BRANCH).`n$detail`nRevisa el run: $($env:RUN_URL)"
             throw
           }
