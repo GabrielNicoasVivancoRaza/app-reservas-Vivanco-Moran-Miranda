@@ -1,49 +1,149 @@
 name: Telegram Notify
 
 on:
-  push:
-    branches:
-      - main
-      - develop
+  workflow_run:
+    workflows: ["SonarQube Analysis"]
+    types: [completed]
 
 jobs:
   notify:
-    name: Notify Telegram
-    runs-on: ubuntu-latest
-    if: github.event.head_commit != null
+    name: Notify Telegram with SonarQube results
+    runs-on: self-hosted
     steps:
-      - name: Send Telegram notification
+      - name: Build and send report
+        shell: powershell
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          COMMIT_AUTHOR: ${{ github.event.head_commit.author.name }}
-          COMMIT_BRANCH: ${{ github.ref_name }}
-          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
-          COMMIT_URL: ${{ github.event.head_commit.url }}
-          COMMIT_ADDED: ${{ join(github.event.head_commit.added, ', ') }}
-          COMMIT_MODIFIED: ${{ join(github.event.head_commit.modified, ', ') }}
-          COMMIT_REMOVED: ${{ join(github.event.head_commit.removed, ', ') }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+          SONAR_PROJECT_KEY: reservasec
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          COMMIT_MESSAGE: ${{ github.event.workflow_run.head_commit.message }}
+          COMMIT_AUTHOR: ${{ github.event.workflow_run.head_commit.author.name }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
         run: |
-          FILES_TEXT=""
-          if [ -n "$COMMIT_ADDED" ]; then
-            FILES_TEXT="${FILES_TEXT}+ Agregados: ${COMMIT_ADDED}
-          "
-          fi
-          if [ -n "$COMMIT_MODIFIED" ]; then
-            FILES_TEXT="${FILES_TEXT}~ Modificados: ${COMMIT_MODIFIED}
-          "
-          fi
-          if [ -n "$COMMIT_REMOVED" ]; then
-            FILES_TEXT="${FILES_TEXT}- Eliminados: ${COMMIT_REMOVED}
-          "
-          fi
-          if [ -z "$FILES_TEXT" ]; then
-            FILES_TEXT="(sin archivos reportados)"
-          fi
+          $ErrorActionPreference = "Stop"
+          $repo = $env:GITHUB_REPOSITORY
+          $sha = $env:HEAD_SHA
+          $hostUrl = $env:SONAR_HOST_URL.TrimEnd('/')
+          $projectKey = $env:SONAR_PROJECT_KEY
+          $commitUrl = "$($env:GITHUB_SERVER_URL)/$repo/commit/$sha"
+          $dashboardUrl = "$hostUrl/dashboard?id=$projectKey"
 
-          MESSAGE=$(printf 'Nuevo commit en ReservasEC\n\nAutor: %s\nRama: %s\nMensaje: %s\n\nArchivos:\n%s\nCommit: %s' \
-            "$COMMIT_AUTHOR" "$COMMIT_BRANCH" "$COMMIT_MESSAGE" "$FILES_TEXT" "$COMMIT_URL")
+          function Send-Telegram($text) {
+            $telegramUri = "https://api.telegram.org/bot$($env:TELEGRAM_BOT_TOKEN)/sendMessage"
+            Invoke-RestMethod -Uri $telegramUri -Method Post -Body @{
+              chat_id = $env:TELEGRAM_CHAT_ID
+              text    = $text
+            } | Out-Null
+          }
 
-          curl -sS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-            --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
-            --data-urlencode "text=${MESSAGE}"
+          try {
+            $ghHeaders = @{
+              Authorization = "Bearer $($env:GH_TOKEN)"
+              Accept        = "application/vnd.github+json"
+            }
+            $commitData = Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/commits/$sha" -Headers $ghHeaders
+
+            $fileEntries = $commitData.files | Select-Object -First 10 | ForEach-Object { "  - $($_.filename)" }
+            $filesText = ($fileEntries -join "`n")
+            if ($commitData.files.Count -gt 10) {
+              $filesText += "`n  ... y $($commitData.files.Count - 10) archivo(s) mas"
+            }
+            if (-not $filesText) { $filesText = "  (sin archivos reportados)" }
+
+            $pair = "$($env:SONAR_TOKEN):"
+            $b64 = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes($pair))
+            $sonarHeaders = @{ Authorization = "Basic $b64" }
+
+            $gate = Invoke-RestMethod -Uri "$hostUrl/api/qualitygates/project_status?projectKey=$projectKey" -Headers $sonarHeaders
+
+            $metricKeys = "bugs,vulnerabilities,code_smells,ncloc,duplicated_lines_density,coverage,complexity,cognitive_complexity,sqale_debt_ratio,security_hotspots_reviewed,reliability_rating,security_rating,sqale_rating,blocker_violations,critical_violations,major_violations"
+            $measures = Invoke-RestMethod -Uri "$hostUrl/api/measures/component?component=$projectKey&metricKeys=$metricKeys" -Headers $sonarHeaders
+
+            $m = @{}
+            foreach ($meas in $measures.component.measures) { $m[$meas.metric] = $meas.value }
+
+            function Get-Value($key) {
+              if ($m.ContainsKey($key)) { return $m[$key] }
+              return "N/A"
+            }
+
+            function Get-Rating($key) {
+              if (-not $m.ContainsKey($key)) { return "N/A" }
+              switch ($m[$key]) {
+                "1.0" { return "A" }
+                "2.0" { return "B" }
+                "3.0" { return "C" }
+                "4.0" { return "D" }
+                "5.0" { return "E" }
+                default { return "N/A" }
+              }
+            }
+
+            $metricNames = @{
+              blocker_violations         = "Blocker Issues (> 0)"
+              critical_violations        = "Critical Issues (> 0)"
+              major_violations           = "Major Issues (> 5)"
+              security_hotspots_reviewed = "Security Hotspots Reviewed (< 100%)"
+              coverage                   = "Coverage (< 80%)"
+              duplicated_lines_density   = "Duplicated Lines % (> 3%)"
+              sqale_debt_ratio           = "Technical Debt Ratio (> 2.5%)"
+              complexity                 = "Cyclomatic Complexity (> 50)"
+              cognitive_complexity       = "Cognitive Complexity (> 30)"
+            }
+
+            $condLines = foreach ($c in $gate.projectStatus.conditions) {
+              $label = $metricNames[$c.metricKey]
+              if (-not $label) { $label = $c.metricKey }
+              $mark = if ($c.status -eq "OK") { "[OK]" } else { "[FALLA]" }
+              "  $mark $label -> actual: $($c.actualValue)"
+            }
+            $condText = ($condLines -join "`n")
+            if (-not $condText) { $condText = "  (StrictGate no devolvio condiciones; verifica que sea el Quality Gate por defecto del proyecto)" }
+
+            $gateStatus = $gate.projectStatus.status
+            $gateLabel = if ($gateStatus -eq "OK") { "PASSED" } else { "FAILED" }
+
+            $message = @"
+          Alertas SAST - ReservasEC ($($env:HEAD_BRANCH))
+
+          Commit: $($env:COMMIT_MESSAGE)
+          Autor: $($env:COMMIT_AUTHOR)
+
+          Metricas generales:
+            Bugs: $(Get-Value 'bugs')
+            Vulnerabilidades: $(Get-Value 'vulnerabilities')
+            Code Smells: $(Get-Value 'code_smells')
+            Lineas de codigo: $(Get-Value 'ncloc')
+            Duplicacion: $(Get-Value 'duplicated_lines_density')%
+
+          Ratings de calidad:
+            Seguridad: $(Get-Rating 'security_rating')
+            Fiabilidad: $(Get-Rating 'reliability_rating')
+            Mantenibilidad: $(Get-Rating 'sqale_rating')
+
+          Quality Gate StrictGate: $gateLabel
+          $condText
+
+          Archivos modificados:
+          $filesText
+
+          Ver en SonarQube: $dashboardUrl
+          Ver commit en GitHub: $commitUrl
+          "@
+
+            Send-Telegram $message
+
+            if ($gateStatus -ne "OK") {
+              Write-Host "Quality Gate FAILED, ya notificado a Telegram."
+              exit 1
+            }
+          }
+          catch {
+            Send-Telegram "No se pudo generar el reporte de SonarQube para el commit $sha en rama $($env:HEAD_BRANCH).`nError: $($_.Exception.Message)`nRevisa el run: $($env:RUN_URL)"
+            throw
+          }
