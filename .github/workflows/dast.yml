@@ -17,6 +17,20 @@ jobs:
           fetch-depth: 0
 
       # ============================================================
+      # 0. Generar frontend/.env.production.local
+      # (está en .gitignore, no existe en el checkout del runner;
+      # son variables NEXT_PUBLIC_*, no contienen secretos)
+      # ============================================================
+      - name: Create frontend env file
+        shell: powershell
+        run: |
+          @"
+          NEXT_PUBLIC_API_URL=/api/auth
+          NEXT_PUBLIC_BOOKING_URL=/api/bookings
+          NEXT_PUBLIC_USER_URL=/api/users
+          "@ | Out-File -FilePath "frontend/.env.production.local" -Encoding ascii
+
+      # ============================================================
       # 1. Levantar la aplicación con docker-compose
       # ============================================================
       - name: Start application with docker-compose
