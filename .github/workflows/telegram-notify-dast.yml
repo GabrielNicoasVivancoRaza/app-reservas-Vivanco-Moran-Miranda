@@ -1,0 +1,124 @@
+name: Notify Telegram about DAST results
+
+on:
+  workflow_run:
+    workflows: ["DAST Security Scan (OWASP ZAP)"]
+    types: [completed]
+
+jobs:
+  notify-dast:
+    name: Send DAST report to Telegram
+    runs-on: self-hosted
+    if: ${{ github.event.workflow_run.conclusion != 'skipped' }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Download DAST artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: zap-reports
+          path: zap_reports/
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ github.event.workflow_run.id }}
+
+      - name: Read DAST summary
+        shell: powershell
+        id: read-summary
+        run: |
+          $summaryFile = "zap_reports/../dast_summary.json"  # El archivo se generó en la raíz, no dentro de zap_reports.
+          # En realidad, el archivo dast_summary.json se generó en el workspace raíz.
+          # Pero el artifact solo subió zap_reports. Por eso, debemos buscarlo en el workspace raíz.
+          # Podemos intentar descargarlo como artifact o generar el resumen desde el XML.
+          # Para simplificar, vamos a parsear el report.xml nuevamente.
+          $reportXml = "zap_reports/report.xml"
+          $summary = @{ Total=0; High=0; Medium=0; Low=0; Info=0 }
+          if (Test-Path $reportXml) {
+            [xml]$xml = Get-Content $reportXml
+            $alerts = $xml.SelectNodes("//alertitem")
+            foreach ($alert in $alerts) {
+              $risk = [int]$alert.riskcode
+              $summary.Total++
+              switch ($risk) {
+                3 { $summary.High++ }
+                2 { $summary.Medium++ }
+                1 { $summary.Low++ }
+                0 { $summary.Info++ }
+              }
+            }
+          }
+          $summaryJson = $summary | ConvertTo-Json -Compress
+          $summaryJson | Out-File -FilePath "dast_summary.json" -Encoding utf8
+          echo "total=$($summary.Total)" >> $env:GITHUB_OUTPUT
+          echo "high=$($summary.High)" >> $env:GITHUB_OUTPUT
+          echo "medium=$($summary.Medium)" >> $env:GITHUB_OUTPUT
+          echo "low=$($summary.Low)" >> $env:GITHUB_OUTPUT
+          echo "info=$($summary.Info)" >> $env:GITHUB_OUTPUT
+
+      - name: Send Telegram notification
+        shell: powershell
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          COMMIT_MESSAGE: ${{ github.event.workflow_run.head_commit.message }}
+          COMMIT_AUTHOR: ${{ github.event.workflow_run.head_commit.author.name }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+          JOB_STATUS: ${{ github.event.workflow_run.conclusion }}
+          TOTAL: ${{ steps.read-summary.outputs.total }}
+          HIGH: ${{ steps.read-summary.outputs.high }}
+          MEDIUM: ${{ steps.read-summary.outputs.medium }}
+          LOW: ${{ steps.read-summary.outputs.low }}
+          INFO: ${{ steps.read-summary.outputs.info }}
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          function Emoji([int]$cp) { [char]::ConvertFromUtf32($cp) }
+          $eBell    = Emoji 0x1F514
+          $eChart   = Emoji 0x1F4CA
+          $eBug     = Emoji 0x1F41E
+          $eUnlock  = Emoji 0x1F513
+          $eShield  = Emoji 0x1F6E1
+          $eRed     = Emoji 0x1F534
+          $eOrange  = Emoji 0x1F7E0
+          $eYellow  = Emoji 0x1F7E1
+          $eBlue    = Emoji 0x1F535
+          $eWhite   = Emoji 0x26AA
+          $eCheck   = Emoji 0x2705
+          $eCross   = Emoji 0x274C
+          $eLink    = Emoji 0x1F517
+
+          function Send-Telegram($text) {
+            $telegramUri = "https://api.telegram.org/bot$($env:TELEGRAM_BOT_TOKEN)/sendMessage"
+            $bodyObj = @{ chat_id = $env:TELEGRAM_CHAT_ID; text = $text }
+            $json = $bodyObj | ConvertTo-Json -Compress
+            $bytes = [System.Text.Encoding]::UTF8.GetBytes($json)
+            Invoke-RestMethod -Uri $telegramUri -Method Post -Body $bytes -ContentType "application/json; charset=utf-8" | Out-Null
+          }
+
+          $statusEmoji = if ($env:JOB_STATUS -eq "success") { $eCheck } else { $eCross }
+          $statusText = if ($env:JOB_STATUS -eq "success") { "PASSED" } else { "FAILED" }
+
+          $message = @"
+          $eBell **DAST Scan - ReservasEC** ($env:HEAD_BRANCH)
+
+          Commit: $env:COMMIT_MESSAGE
+          Autor: $env:COMMIT_AUTHOR
+          Estado: $statusEmoji $statusText
+
+          $eChart **Vulnerabilidades encontradas:**
+            $eRed ALTO: $env:HIGH
+            $eOrange MEDIO: $env:MEDIUM
+            $eYellow BAJO: $env:LOW
+            $eBlue INFO: $env:INFO
+            $eWhite TOTAL: $env:TOTAL
+
+          $eShield Reporte generado por OWASP ZAP.
+
+          $eLink Ver detalles: $env:RUN_URL
+          "@
+
+          Send-Telegram $message
