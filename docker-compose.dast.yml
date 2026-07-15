@@ -1,0 +1,53 @@
+# Stack aislado para el escaneo DAST en CI.
+# Sin container_name ni puertos publicados: no choca con el stack local
+# (sonarqube1, mongo, etc.). ZAP se conecta por la red interna del proyecto.
+services:
+  mongo:
+    image: mongo
+
+  auth-service:
+    build:
+      context: ./auth-service
+    environment:
+      - MONGO_URI=mongodb://mongo:27017/authdb
+      - JWT_SECRET=secreto-super-seguro
+    depends_on:
+      - mongo
+
+  booking-service:
+    build:
+      context: ./booking-service
+    environment:
+      - MONGO_URI=mongodb://mongo:27017/bookingdb
+      - JWT_SECRET=secreto-super-seguro
+    depends_on:
+      - mongo
+
+  notification-service:
+    build:
+      context: ./notification-service
+    environment:
+      - EMAIL_HOST=sandbox.smtp.mailtrap.io
+      - EMAIL_PORT=2525
+      - EMAIL_USER=58b4d823829f7f
+      - EMAIL_PASS=e77d610fd759b5
+    depends_on:
+      - mongo
+
+  user-service:
+    build: ./user-service
+    environment:
+      - PORT=5003
+      - MONGO_URI=mongodb://mongo:27017/user-service-db
+      - JWT_SECRET=secreto-super-seguro
+    depends_on:
+      - mongo
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    depends_on:
+      - auth-service
+      - booking-service
+      - user-service

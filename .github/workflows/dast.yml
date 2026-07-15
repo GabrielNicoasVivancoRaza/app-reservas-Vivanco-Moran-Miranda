@@ -31,100 +31,70 @@ jobs:
           "@ | Out-File -FilePath "frontend/.env.production.local" -Encoding ascii
 
       # ============================================================
-      # 1. Levantar la aplicación con docker-compose
+      # 1. Levantar la aplicación con el compose dedicado de DAST
+      # (proyecto "dast": contenedores y red aislados, sin puertos
+      # publicados, para no chocar con el stack local del runner)
       # ============================================================
       - name: Start application with docker-compose
         shell: powershell
         run: |
-          docker-compose -f docker-compose.yml up -d
+          docker-compose -f docker-compose.dast.yml -p dast up -d --build
 
       # ============================================================
-      # 2. Esperar a que frontend y servicios críticos estén listos
+      # 2. Esperar a que el frontend esté listo (desde la red interna)
       # ============================================================
       - name: Wait for application to be ready
         shell: powershell
         run: |
-          $services = @(
-            @{Name="frontend"; Port=3000},
-            @{Name="auth-service"; Port=4000},
-            @{Name="booking-service"; Port=5000}
-          )
           $maxAttempts = 30
           $attempt = 0
-          $allReady = $false
-          Write-Host "Esperando que los servicios estén disponibles en localhost..."
+          $ready = $false
+          Write-Host "Esperando que el frontend responda en la red dast_default..."
           do {
             $attempt++
-            $ready = $true
-            foreach ($svc in $services) {
-              $url = "http://localhost:$($svc.Port)"
-              try {
-                $response = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 2
-                if ($response.StatusCode -ne 200) {
-                  Write-Host "Servicio $($svc.Name) en $url devolvió $($response.StatusCode)"
-                  $ready = $false
-                } else {
-                  Write-Host "Servicio $($svc.Name) listo"
-                }
-              } catch {
-                Write-Host "Servicio $($svc.Name) en $url no responde (intento $attempt)"
-                $ready = $false
-              }
-            }
-            if ($ready) {
-              $allReady = $true
+            docker run --rm --network dast_default curlimages/curl:latest -sf -o /dev/null http://frontend:3000
+            if ($LASTEXITCODE -eq 0) {
+              $ready = $true
               break
             }
+            Write-Host "Frontend aun no responde (intento $attempt de $maxAttempts)"
             Start-Sleep -Seconds 5
           } while ($attempt -lt $maxAttempts)
-          if (-not $allReady) {
-            Write-Error "Algunos servicios no están listos después de $maxAttempts intentos."
+          if (-not $ready) {
+            docker-compose -f docker-compose.dast.yml -p dast ps
+            docker-compose -f docker-compose.dast.yml -p dast logs frontend
+            Write-Error "El frontend no respondio despues de $maxAttempts intentos."
             exit 1
           }
-          Write-Host "Todos los servicios están listos."
+          Write-Host "Frontend listo."
 
       # ============================================================
-      # 3. Obtener el nombre de la red de docker-compose
-      # ============================================================
-      - name: Get docker-compose network name
-        shell: powershell
-        id: network
-        run: |
-          $containerName = "frontend"
-          $network = docker inspect -f '{{range $net,$v := .NetworkSettings.Networks}}{{$net}}{{end}}' $containerName
-          if (-not $network) {
-            Write-Host "No se pudo obtener la red del contenedor. Usando red por defecto 'reservasec_default'."
-            $network = "reservasec_default"
-          }
-          Write-Host "Red detectada: $network"
-          echo "network=$network" >> $env:GITHUB_OUTPUT
-
-      # ============================================================
-      # 4. Ejecutar OWASP ZAP Baseline Scan contra frontend
+      # 3. Ejecutar OWASP ZAP Baseline Scan contra frontend
+      # (-I: el paso no falla por warnings; el paso 6/7 decide segun
+      # el riesgo de las alertas del reporte)
       # ============================================================
       - name: Run OWASP ZAP Baseline Scan
         shell: powershell
-        env:
-          NETWORK: ${{ steps.network.outputs.network }}
         run: |
           $targetUrl = "http://frontend:3000"
-          Write-Host "Escaneando $targetUrl en la red $env:NETWORK ..."
+          Write-Host "Escaneando $targetUrl en la red dast_default ..."
           New-Item -ItemType Directory -Force -Path "zap_reports" | Out-Null
           docker run --rm `
-            --network $env:NETWORK `
+            --network dast_default `
             -v "${PWD}/zap_reports:/zap/wrk" `
-            owasp/zap2docker-stable `
+            ghcr.io/zaproxy/zaproxy:stable `
             zap-baseline.py `
             -t $targetUrl `
             -r report.html `
             -x report.xml `
-            -z "-config view.mode=table" `
-            -J report.json
+            -J report.json `
+            -I
 
       # ============================================================
       # 5. Subir los reportes como artifacts
       # ============================================================
       - name: Upload ZAP reports
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: zap-reports
@@ -188,9 +158,10 @@ jobs:
           exit 1
 
       # ============================================================
-      # 8. Detener servicios
+      # 8. Detener y limpiar el stack de DAST (solo el proyecto "dast",
+      # no toca el SonarQube ni el mongo locales)
       # ============================================================
       - name: Stop services
         if: always()
         shell: powershell
-        run: docker-compose down
+        run: docker-compose -f docker-compose.dast.yml -p dast down -v
