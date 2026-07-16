@@ -142,3 +142,7 @@ Cada alerta en el reporte HTML incluye descripción, riesgo, evidencia (URL y re
 
 1. **GitHub → Actions → "DAST Security Scan (OWASP ZAP)"** → seleccionar el run → sección *Artifacts* → descargar `zap-reports` → abrir `report.html` en el navegador.
 2. **Telegram**: el grupo del equipo recibe el resumen automáticamente al terminar cada escaneo.
+
+### EVIDENCIA 
+
+![alt text](image.png)
